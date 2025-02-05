@@ -170,6 +170,11 @@ class ExtractDiff(Step):
         self.update_info = inputs["update_info"]
 
         self.inputs = inputs
+        
+        # Add timeout configuration
+        self.connect_timeout = 3.05  # seconds
+        self.read_timeout = 27  # seconds
+        self.timeout = (self.connect_timeout, self.read_timeout)
 
     def run(self) -> dict:
         regex = r"https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)"
@@ -184,9 +189,17 @@ class ExtractDiff(Step):
             name = namespace + ":" + name
         vuln_version = update_info["vuln_version"]
         fixed_version = update_info["fixed_version"]
-        info = requests.get(self.libraries_base_url + platform_type + "/" + name + "?api_key=" + self.libraries_api_key)
-        if info.status_code != 200:
-            logger.info(f"Unable to get repo url for library {name}")
+        libraries_url = self.libraries_base_url + platform_type + "/" + name + "?api_key=" + self.libraries_api_key
+        try:
+            info = requests.get(libraries_url, timeout=self.timeout)
+            if info.status_code != 200:
+                logger.info(f"Unable to get repo url for library {name}")
+                return {}
+        except requests.exceptions.Timeout:
+            logger.warning(f"Request timed out for {libraries_url}")
+            return {}
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request failed for {libraries_url}: {str(e)}")
             return {}
 
         repo_url = info.json()["repository_url"]
@@ -204,12 +217,20 @@ class ExtractDiff(Step):
         temp_file_path = None
 
         for vuln_version, fixed_version in generate_version_combinations(vuln_version, fixed_version):
-            diff_file = requests.get(compare_url + vuln_version + "..." + fixed_version, headers=headers)
-
-            if diff_file.text.startswith("diff"):
-                with defered_temp_file("w") as fp:
-                    fp.write(diff_file.text)
-                    temp_file_path = Path(fp.name)
+            try:
+                full_url = compare_url + vuln_version + "..." + fixed_version
+                diff_file = requests.get(full_url, headers=headers, timeout=self.timeout)
+                
+                if diff_file.text.startswith("diff"):
+                    with defered_temp_file("w") as fp:
+                        fp.write(diff_file.text)
+                        temp_file_path = Path(fp.name)
+            except requests.exceptions.Timeout:
+                logger.warning(f"Request timed out for {full_url}")
+                continue
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Request failed for {full_url}: {str(e)}")
+                continue
 
         if temp_file_path is None:
             logger.info(

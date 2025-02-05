@@ -73,13 +73,15 @@ class KeepAliveHTTPSAdapter(HTTPAdapter):
 class PatchedClient(click.ParamType):
     TOKEN_URL = "https://app.patched.codes/signin"
     DEFAULT_PATCH_URL = "https://patchwork.patched.codes"
+    DEFAULT_TIMEOUT = 10  # Default timeout in seconds
     ALLOWED_TELEMETRY_KEYS = {
         "model",
     }
 
-    def __init__(self, access_token: str, url: str = DEFAULT_PATCH_URL):
+    def __init__(self, access_token: str, url: str = DEFAULT_PATCH_URL, timeout: int = DEFAULT_TIMEOUT):
         self.access_token = access_token
         self.url = url
+        self.timeout = timeout
         self._session = Session()
         atexit.register(self._session.close)
         self._edit_tcp_alive()
@@ -89,8 +91,13 @@ class PatchedClient(click.ParamType):
         self._session.mount("https://", KeepAliveHTTPSAdapter())
 
     def _post(self, **kwargs) -> Response | None:
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = self.timeout
         try:
             response = self._session.post(**kwargs)
+        except requests.Timeout as e:
+            logger.error(f"Request timed out: {e}")
+            return None
         except requests.ConnectionError as e:
             logger.error(f"Unable to establish connection to patched server: {e}")
             return None
@@ -101,8 +108,13 @@ class PatchedClient(click.ParamType):
         return response
 
     def _get(self, **kwargs) -> Response | None:
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = self.timeout
         try:
             response = self._session.get(**kwargs)
+        except requests.Timeout as e:
+            logger.error(f"Request timed out: {e}")
+            return None
         except requests.ConnectionError as e:
             logger.error(f"Unable to establish connection to patched server: {e}")
             return None
@@ -142,7 +154,7 @@ class PatchedClient(click.ParamType):
 
     async def _public_telemetry(self, patchflow: str, inputs: dict[str, Any]):
         user_config = get_user_config()
-        requests.post(
+        self._post(
             url=self.url + "/v1/telemetry/",
             headers={"Authorization": f"Bearer {self.access_token}"},
             json=dict(
